@@ -11,7 +11,7 @@ This ensures:
 * Dependencies are defined
 * Base application exists for containerization
 
----
+
 
 ## 2(a). Explanation
 
@@ -25,11 +25,7 @@ Why `0.0.0.0`?
 
 Because later Docker containers require the app to listen on all interfaces, not just localhost.
 
-## 2(b)
-
----
-
-## 2.1 Environment Setup (Virtual Environment - venv)
+## 2(b) Environment Setup (Virtual Environment - venv)
 
 This project uses a Python virtual environment (`venv`) to isolate dependencies.
 
@@ -41,7 +37,7 @@ Without `venv`, installing Python packages globally causes problems like:
 * Breaking system Python packages
 * Dependency conflicts between projects
 
----
+
 
 ### Real Problem Example (Without venv)
 
@@ -69,7 +65,7 @@ pip install flask==3.0
 
 Project A breaks.
 
----
+
 
 ### How venv solves this
 
@@ -85,7 +81,7 @@ Now:
 * Flask installed in Project A does NOT affect Project B
 * Each project has its own dependencies
 
----
+
 
 ### Simple Analogy
 
@@ -94,7 +90,7 @@ Think of `venv` like:
 > A separate toolbox for each project
 > Instead of mixing all tools in one box
 
----
+
 
 ### When to use venv
 
@@ -104,7 +100,7 @@ Think of `venv` like:
 
 Note: In Docker, this is not required because containers already isolate environments.
 
----
+
 
 ## 3. Documentation Links
 
@@ -114,7 +110,7 @@ Note: In Docker, this is not required because containers already isolate environ
 * Python Virtual Environment
   https://docs.python.org/3/library/venv.html
 
----
+
 
 ## 4. Simple Example
 
@@ -136,7 +132,7 @@ Output:
 Docker Zero to Production - Step 1
 ```
 
----
+
 
 ## 5. Common Mistakes
 
@@ -146,7 +142,7 @@ Common beginner mistakes:
 * Not creating virtual environment
 * Not pinning dependencies in requirements.txt
 
----
+
 
 ## 6. Real World Scenarios
 
@@ -159,7 +155,7 @@ This mirrors real-world workflow:
 
 This step covers **Step 1 — Build application**
 
----
+
 
 ## 7. Exercises
 
@@ -175,7 +171,7 @@ Example:
 http://localhost:5000/health
 ```
 
----
+
 
 ## 8. Practical Implementation
 
@@ -197,7 +193,6 @@ pip install -r requirements.txt
 python app.py
 ```
 
----
 
 ## 9. Troubleshooting
 
@@ -213,7 +208,7 @@ Solution:
 pip install -r requirements.txt
 ```
 
----
+
 
 ## 10. Production Best Practices
 
