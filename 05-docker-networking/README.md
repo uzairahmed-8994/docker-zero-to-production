@@ -196,7 +196,7 @@ my-network
       └── /etc/resolv.conf → nameserver 127.0.0.11
 ```
  
-The default bridge has no such DNS. That's the entire difference between your `app1`/`app2` failure and your `app3`/`app4` success.
+The default bridge has no such DNS. That's the entire difference between `app1`/`app2` failure and `app3`/`app4` success.
  
 ### Why IP Addresses Are Unreliable
  
@@ -207,14 +207,36 @@ Name-based DNS on custom networks solves this permanently. The name `db` always 
 ### Network Isolation Between Networks
  
 Different custom networks are completely isolated from each other. A container on `network-a` cannot reach a container on `network-b` even if both run on the same machine. This is intentional — it gives you security separation between different application stacks.
+
  
-If a container needs to span two networks (like a reverse proxy routing to multiple apps), you attach it to both:
- 
+If a container needs access to multiple networks (for example, a reverse proxy routing traffic to different services), you can attach it to more than one network.
+
 ```bash
+# Create two different network
+docker network create network-a
+docker network create network-b
+
+docker run -d --name nginx-proxy --network network-a nginx
 docker network connect network-b nginx-proxy
 ```
  
-Now `nginx-proxy` can reach containers on both networks, but the two networks still can't reach each other directly.
+Now this container is connected to both networks.
+
+You can verify this:
+```bash
+docker inspect nginx-proxy
+```
+You’ll see two network entries under Networks.
+
+What this means?
+
+nginx-proxy can reach:
+- containers in network-a
+- containers in network-b
+BUT:
+- network-a cannot reach network-b
+- network-b cannot reach network-a
+The proxy becomes a controlled bridge, not the networks themselves.
  
 ### Host and None — The Other Modes
  
@@ -248,15 +270,13 @@ docker exec -it app3 cat /etc/resolv.conf     # confirm 127.0.0.11 DNS
  
 # ── Finding Container IPs ──────────────────────────────────────────────────
  
-docker inspect app2 --format='{{.NetworkSettings.IPAddress}}'
-docker inspect app3 --format='{{.NetworkSettings.Networks.my-network.IPAddress}}'
+docker inspect app1 | grep -A 30 '"Networks"'
 ```
- 
----
+
  
 ## 7. Real-World Notes
  
-In real projects you almost never manage networks this manually. Docker Compose creates a custom network for your entire stack automatically — every service reaches every other by its service name. But knowing *why* that works means you'll never be confused when a connection fails.
+In real projects you almost never manage networks manually. Docker Compose creates a custom network for your entire stack automatically — every service reaches every other by its service name. But knowing *why* that works means you'll never be confused when a connection fails.
 
 For example, in a real application:
 
