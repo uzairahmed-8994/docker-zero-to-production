@@ -18,7 +18,6 @@ In the previous step, we learned how to access a container from the browser usin
 But that only solves communication between host → container.
 
 It does NOT solve container → container communication.
----
  
 ## 2. What Happened (Experience)
  
@@ -41,7 +40,7 @@ ping app2
 ```
 ping: app2: Name or service not known
 ```
-Ping is used here as a simple way to test basic network connectivity.
+<details>Ping is used here as a simple way to test basic network connectivity.
 
 If ping works:
 - the containers can reach each other over the network
@@ -49,57 +48,52 @@ If ping works:
 If it fails:
 - either networking or name resolution is broken
 
-This does NOT mean the application itself is working — only that the network path exists.
+This does NOT mean the application itself is working — only that the network path exists. </details>
 
 
-Strange. The container is named `app2`. It's running. Why can't `app1` find it by name?
+The container is named `app2`. It's running. Why can't `app1` find it by name?
  
 At this point, this was confusing.
 
-The containers were clearly running. I expected container names to work automatically — just like localhost works on my machine.
+The containers were clearly running. 
+```bash
+docker ps
+CONTAINER ID   IMAGE          COMMAND           CREATED              STATUS              PORTS      NAMES
+1aee52c13b5a   flask-app:v1   "python app.py"   3 seconds ago        Up 2 seconds        5000/tcp   app2
+0a90c841739e   flask-app:v1   "python app.py"   About a minute ago   Up About a minute   5000/tcp   app1
+```
 
 So either:
 - Docker networking was broken
 - or I misunderstood how container naming works
 
-So I found the actual IP addresses:
- 
+To verify whether networking itself was working, I checked the container IPs:
+
 ```bash
-docker inspect app2 --format='{{.NetworkSettings.IPAddress}}'
-# 172.17.0.3
+docker network inspect bridge
+#           "Name": "app1", IPv4Address: 172.17.0.2
+#           "Name": "app2", IPv4Address: 172.17.0.3
 ```
  
-Tried again using the IP directly:
- 
+Then I tried using the IP directly:
+
 ```bash
 ping 172.17.0.3
 # 64 bytes from 172.17.0.3: seq=0 ttl=64 time=0.091 ms
 ```
  
-It worked. So the containers *can* reach each other — just not by name.
- 
-That raised the real question: **what's the difference between using a name and using an IP?** And why does the name not work?
- 
-Then I created a custom network and ran two new containers inside it:
- 
-```bash
-docker network create my-network
- 
-docker run -d --name app3 --network my-network flask-app:v1
-docker run -d --name app4 --network my-network flask-app:v1
-```
- 
-Exec'd into `app3` and tried pinging `app4` by name:
- 
-```bash
-docker exec -it app3 /bin/sh
-ping app4
-# 64 bytes from app4 (172.18.0.3): seq=0 ttl=64 time=0.078 ms
-```
- 
-It worked. Same containers, same image — the only difference was the network they were on.
- 
----
+It worked.
+
+So the containers can reach each other — just not by name.
+
+That made the situation more confusing:
+
+- the network is working
+- but name-based communication is not
+
+
+**What’s the difference between using a name and using an IP?** Why does one work and the other fail?
+
  
 ## 3. Why It Happens
  
@@ -107,7 +101,7 @@ When you run a container without specifying a network, Docker attaches it to a b
  
 The default bridge network is basic. It gives containers IP addresses and lets them reach each other by IP — but it has **no DNS**. There is no name resolution. Containers on the default bridge are essentially strangers who happen to live on the same subnet. They can communicate if you know the exact address, but nobody knows anyone's name.
  
-When you create a **custom bridge network**, Docker does something different. It runs an internal DNS server for that network. Every container you attach to a custom network gets registered by its name in that DNS server. So when `app3` tries to reach `app4`, Docker's internal DNS resolves `app4` to its IP automatically — and it keeps that record updated even if the container restarts and gets a new IP.
+When you create a **custom bridge network**, Docker does something different. It runs an internal DNS server for that network. Every container you attach to a custom network gets registered by its name in that DNS server. So when one container tries to reach another by name, Docker’s internal DNS resolves it to the correct IP automatically — and keeps it updated even if the container restarts and gets a new IP.
  
 This is not a small detail. It's the entire foundation of how multi-container apps work in Docker.
  
@@ -118,8 +112,8 @@ It was because:
 - communication by IP works
 - communication by name requires DNS
 - and DNS only exists in custom networks
----
- 
+
+
 ## 4. Solution
 
 Since the problem is lack of DNS in the default bridge network, the solution is to use a network where Docker provides automatic name resolution.
@@ -132,12 +126,13 @@ For any scenario where containers need to discover each other reliably, a custom
 # Create a network
 docker network create my-network
  
-# Attach containers to it at run time
+# Run containers inside that network:
 docker run -d --name app3 --network my-network flask-app:v1
 docker run -d --name app4 --network my-network flask-app:v1
  
-# Now app3 can reach app4 by name
+# Now containers can resolve each other by name:
 docker exec -it app3 ping app4
+# 64 bytes from app4 (172.18.0.3): seq=0 ttl=64 time=0.078 ms
 ```
  
 You can also attach an already-running container to a network:
@@ -152,7 +147,6 @@ And detach it:
 docker network disconnect my-network app1
 ```
  
----
  
 ## 5. Deep Understanding
  
