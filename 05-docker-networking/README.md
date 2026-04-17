@@ -288,8 +288,7 @@ These names (backend, db) are container names resolved by Docker's internal DNS.
 Hardcoding container IPs in application config is a serious mistake in any containerized environment. Always use service names — `postgresql://db:5432/mydb`, `http://backend:8000`, etc. The name is stable. The IP is not.
  
 When something can't connect in production, the first question is always "can it resolve the name?" — not "is the port open?". Most connection failures in containerized systems are DNS failures, not port or firewall issues.
- 
----
+
  
 ## 8. Exercises
  
