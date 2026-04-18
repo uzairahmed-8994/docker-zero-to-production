@@ -316,7 +316,7 @@ The raw output is very long. Use `--format` to extract exactly what you need:
 
 ```bash
 # What IP does this container have?
-docker inspect flask-app --format='{{.NetworkSettings.IPAddress}}'
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' flask-app
 
 # What exit code did it die with?
 docker inspect flask-broken --format='{{.State.ExitCode}}'
@@ -406,7 +406,8 @@ Exit codes matter in automated pipelines. A CI/CD system (GitHub Actions, Jenkin
 
 ## 8. Exercises
 
-**Exercise 1 — Reproduce the crash, find it in logs**
+**Exercise 1 — Reproduce the crash, find it in logs:**
+
 Introduce a syntax error in `app.py` (remove a colon from a function definition). Rebuild the image. Run the container in detached mode. Watch it not appear in `docker ps`. Find it with `docker ps -a`. Read the exact Python error with `docker logs`. Fix the code, rebuild, confirm it works again.
 
 **Exercise 2 — Explore the container from inside**
