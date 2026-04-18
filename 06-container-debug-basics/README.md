@@ -410,18 +410,22 @@ Exit codes matter in automated pipelines. A CI/CD system (GitHub Actions, Jenkin
 
 Introduce a syntax error in `app.py` (remove a colon from a function definition). Rebuild the image. Run the container in detached mode. Watch it not appear in `docker ps`. Find it with `docker ps -a`. Read the exact Python error with `docker logs`. Fix the code, rebuild, confirm it works again.
 
-**Exercise 2 — Explore the container from inside**
+**Exercise 2 — Explore the container from inside:**
+
 Start the flask container normally. Exec into it with `/bin/sh`. Confirm your source files are at `/app`. Run `ps aux` and find `python app.py` listed as PID 1. Run `env` to see what environment variables exist inside the container. Run `cat /etc/resolv.conf` — you should recognize `127.0.0.11` from the networking step if you ran this on a custom network.
 
-**Exercise 3 — The ephemeral filesystem**
+**Exercise 3 — The ephemeral filesystem:**
+
 Exec into a running container and create a file: `echo "i will disappear" > /app/test.txt`. Confirm it exists with `cat /app/test.txt`. Now remove the container with `docker rm -f` and run a fresh one from the same image. Try to read the file again. It is gone. The image is untouched. This is the most important mental model in Docker.
 
-**Exercise 4 — Debug a container that won't start**
+**Exercise 4 — Debug a container that won't start:**
+
 Change your Dockerfile CMD to point to a file that does not exist:
 ```dockerfile
 CMD ["python", "doesnotexist.py"]
 ```
 Build and run. It exits immediately. Check the exit code with `docker ps -a`. Read the error with `docker logs`. Then use `--entrypoint /bin/sh` to get inside the image and look around — confirm the file is genuinely missing. Fix the Dockerfile, rebuild, confirm it works.
 
-**Exercise 5 — Understand exit codes**
+**Exercise 5 — Understand exit codes:**
+
 Run a container normally then stop it with `docker stop`. Check the exit code with `docker inspect --format='{{.State.ExitCode}}'`. It should be `0` or `143`. Now run a container with a broken app and check its exit code — it will be `1`. Notice the difference: `0` means clean stop, anything else means something went wrong. This is the exact signal that CI/CD pipelines use to decide if your deployment succeeded.
