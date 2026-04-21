@@ -1,0 +1,30 @@
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "5001:5001"
+    environment:
+      - BACKEND_URL=http://backend:5000
+    networks:
+      - frontend-network
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    networks:
+      - frontend-network
+      - backend-network
+
+  database:
+    image: postgres:15
+    environment:
+      - POSTGRES_PASSWORD=secret
+    networks:
+      - backend-network
+
+networks:
+  frontend-network:
+  backend-network:
