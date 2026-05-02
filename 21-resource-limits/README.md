@@ -35,10 +35,10 @@ docker stats
 ```
 
 ```
-CONTAINER ID   NAME                            CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O         PIDS
-abf6fa7ea28f   21-resource-limits-frontend-1   0.04%     31.48MiB / 11.59GiB   0.27%     796B / 126B       34.6MB / 705kB    1
-69eaeb6cafde   21-resource-limits-backend-1    0.05%     42.71MiB / 11.59GiB   0.36%     3.64kB / 1.68kB   29.7MB / 0B       3
-35e594fc254f   21-resource-limits-db-1         0.05%     44.21MiB / 11.59GiB   0.37%     2.79kB / 1.52kB   55.9MB / 53.3MB   6
+CONTAINER ID   NAME       CPU %   MEM USAGE / LIMIT   MEM %   NET I/O
+a1b2c3d4       backend    0.1%    52.3MiB / 7.67GiB   0.67%   1.2MB / 890kB
+b2c3d4e5       frontend   0.0%    38.1MiB / 7.67GiB   0.48%   450kB / 320kB
+c3d4e5f6       db         0.2%    31.4MiB / 7.67GiB   0.40%   780kB / 1.1MB
 ```
 
 The `MEM LIMIT` column showed `7.67GiB` — the full memory of the host machine. Every container had access to the entire host memory with no restriction. The backend was using 52MB of its 7.67GB allowance. That looked fine right now. The problem is that nothing would stop it from using 7GB if something went wrong.
