@@ -61,7 +61,7 @@ DB_USER=appuser
 DB_PASSWORD=secret
 ```
 
-The compose file is now safe to commit. The `.env` file is added to `.gitignore` and stays off version control. The credential is not in the repository.
+The compose file is now safe to commit. The `.env` file is in `.gitignore` and stays off version control. The credential is not in the repository.
 
 I created the `.env` file and updated `docker-compose.yml` to use variable substitution. Then tested that it still worked:
 
@@ -185,17 +185,18 @@ docker compose up -d
 docker compose logs backend
 ```
 
-It failed. Gunicorn tries to write a pid file when it starts. The read-only filesystem prevented it. I checked where it was trying to write:
+It failed. Gunicorn — and the Python runtime itself — requires a writable temporary directory at startup. When the filesystem is read-only, Python cannot create temporary files under /tmp (or fallback locations like /var/tmp), causing the application to fail.
+
 
 ```bash
 docker compose logs backend | grep "error\|Error\|permission"
 ```
 
 ```
-[ERROR] Worker with pid 8 exited with code 1
+| FileNotFoundError: [Errno 2] No usable temporary directory found in ['/tmp', '/var/tmp', '/usr/tmp', '/app']
 ```
 
-More investigation showed the issue was Gunicorn's temporary worker files. The fix is to mount a tmpfs — a temporary in-memory filesystem — at the paths Gunicorn needs to write to:
+The fix is to mount a tmpfs — a temporary in-memory filesystem — at the paths Gunicorn needs to write to:
 
 ```yaml
 backend:
@@ -221,53 +222,37 @@ The filesystem was read-only. The application could not write to its own directo
 
 **Step 5 — Scanning the image for known vulnerabilities**
 
-I had been building on `python:3.11.9-slim` since step 14. The image contained the Python interpreter, the Debian base OS, and all the system libraries those depend on. Any of those could have known CVEs — vulnerabilities that were discovered and published after the image was built.
+I had been building on python:3.11.9-alpine. The image contains the Python interpreter, the Alpine base OS, and all the system libraries those depend on. Any of those can have known CVEs — vulnerabilities that were discovered and published after the image was built.
 
-Docker Desktop includes a vulnerability scanner accessible through `docker scout`:
-
-```bash
-docker scout quickview backend:v1
-```
-
-```
-  Target     │  backend:v1
-    digest   │  sha256:a1b2c3...
-  
-  Overview
-                    │    Analyzed Image
-  ─────────────────────────────────────────────
-  Version         │ 21.06
-  Vulnerabilities │    2C    4H    12M    3L
-```
-
-Two critical vulnerabilities, four high, twelve medium, three low. Some of these were in the Debian base packages — packages that `python:3.11.9-slim` inherits but that are not needed by the Flask application. Some were in the Python packages themselves.
-
-I looked at the critical ones:
+To scan the image, I used Trivy — a widely used vulnerability scanner that works in local environments, CI/CD pipelines, and production systems:
 
 ```bash
-docker scout cves backend:v1 --only-severity critical
+trivy image backend:v1
+```
+On the first run, Trivy downloaded its vulnerability database and analyzed the image.
+
+```markdown
+Total: 70 (LOW: 8, MEDIUM: 34, HIGH: 23, CRITICAL: 5)
 ```
 
-The critical CVEs were in system libraries in the Debian base — `libssl` and `libc`. These were not in packages I had explicitly installed; they came with the base image. The fix was to update the base image to get the patched versions:
+Most vulnerabilities were not in my application code. They came from:
 
-```bash
-docker pull python:3.11.9-slim
+- Alpine base image (musl, openssl, sqlite, etc.)
+- System libraries inherited from python:3.11.9-alpine
+
+Trivy also showed:
+
+```markdown
+This OS version is no longer supported
 ```
 
-Docker Hub had updated `3.11.9-slim` with the patched system libraries. Rebuilding picked up the updated base:
+This explained why the numbers were so high. The majority of the vulnerabilities were inherited from the base image rather than introduced by the application itself. When a base OS reaches end-of-life, it stops receiving security patches. Vulnerabilities continue to be discovered, but there are no fixes released for that version. As a result, scanners like Trivy report a large number of issues that cannot be resolved without changing the base image.
 
-```bash
-docker compose build --no-cache backend
-docker scout quickview backend:v1
-```
+This is an important distinction: the application may be correct and secure, but the container can still be vulnerable because of the underlying OS it is built on. In this case, the problem was not the Flask code or even most of the Python dependencies — it was the outdated Alpine version bundled inside the image.
 
-```
-  Vulnerabilities │    0C    1H    9M    3L
-```
+The correct fix is not to patch individual libraries manually, but to move to a supported base image. Updating the image to a newer, supported Alpine version (for example python:3.14-alpine3.23) ensures that the underlying system libraries are maintained and receive security updates. After rebuilding the image with an updated base, the number of vulnerabilities drops significantly, and the “unsupported OS” warning disappears.
 
-The critical vulnerabilities were gone. The remaining ones were in packages without available patches yet — worth tracking but not immediately actionable.
-
-This was an important realisation: keeping the base image tag pinned (`3.11.9-slim`) while regularly pulling and rebuilding ensures you get security patches without unintentionally picking up breaking changes from a major version bump. The tag is stable; the underlying layers get updated by the maintainer when patches are available.
+This highlights a key practice in container security: vulnerabilities are often inherited rather than introduced. Keeping the base image up to date is one of the most effective ways to reduce risk, and it should be done regularly as part of the build process.
 
 **Step 6 — Reviewing what was already done and what the stack now looks like**
 
@@ -283,7 +268,7 @@ Each of these addresses a different attack surface. Together they reduce the bla
 
 ## 3. Why It Happens
 
-Container security issues are usually not novel attack types — they are familiar problems (credential exposure, overprivileged processes, unnecessary network exposure) applied to a container context. Docker does not automatically secure these things. It provides the mechanisms — capability dropping, read-only filesystems, network isolation, non-root users — but using them is the developer's responsibility.
+Container security issues are usually not novel attack types — they are familiar problems (credential exposure, overprivileged processes, unnecessary network exposure) applied to a container context. Docker provides mechanisms, not secure defaults. It provides the mechanisms — capability dropping, read-only filesystems, network isolation, non-root users but using them is the developer's responsibility.
 
 The default Docker configuration is designed for compatibility and ease of use, not for minimal privilege. A fresh container has writable filesystems, a default capability set that includes more than most applications need, and no restrictions on network exposure beyond what the compose file specifies. Production security means explicitly configuring each of these away from the default.
 
@@ -328,32 +313,28 @@ __pycache__
 ```yaml
 services:
   frontend:
-    build: ./frontend
-    restart: on-failure
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /run
     cap_drop:
       - ALL
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 256m
-        reservations:
-          cpus: "0.1"
-          memory: 128m
+    build: ./frontend
+    restart: on-failure
+    mem_limit: 256m
+    cpus: '0.25'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "127.0.0.1:5001:5001"
     environment:
       - BACKEND_URL=http://backend:5000
+
     networks:
       - frontend-network
     depends_on:
@@ -361,31 +342,31 @@ services:
         condition: service_healthy
 
   backend:
-    build: ./backend
-    image: backend:v1
-    restart: on-failure
     read_only: true
     tmpfs:
       - /tmp
       - /run
     cap_drop:
       - ALL
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512m
-        reservations:
-          cpus: "0.25"
-          memory: 256m
+    build: ./backend
+    restart: on-failure
+    mem_limit: 512m
+    cpus: '0.5'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 15s
+    image: backend:v1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "127.0.0.1:5000:5000"
+
     environment:
       - DB_HOST=db
       - DB_PORT=5432
@@ -400,30 +381,29 @@ services:
         condition: service_healthy
 
   db:
-    image: postgres:15
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512m
-        reservations:
-          cpus: "0.25"
-          memory: 256m
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d appdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    environment:
-      - POSTGRES_DB=appdb
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - backend-network
+      image: postgres:15
+      restart: unless-stopped
+      mem_limit: 512m
+      cpus: '0.5'
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+        interval: 5s
+        timeout: 5s
+        retries: 5
+        start_period: 20s
+      logging:
+        driver: json-file
+        options:
+          max-size: "10m"
+          max-file: "3"
+      environment:
+        - POSTGRES_DB=appdb
+        - POSTGRES_USER=${DB_USER}
+        - POSTGRES_PASSWORD=${DB_PASSWORD}
+      volumes:
+        - postgres-data:/var/lib/postgresql/data
+      networks:
+        - backend-network
 
 volumes:
   postgres-data:
@@ -493,35 +473,22 @@ The database has no `ports` entry at all — it is reachable only from container
 
 ### Vulnerability Scanning — Understanding the Output
 
-`docker scout` (or `trivy`, `grype`, or `snyk container test`) scans the image's installed packages against a database of known CVEs. The output categorises findings by severity: Critical, High, Medium, Low.
+`trivy` scans the image’s operating system packages and application dependencies against a database of known CVEs. The output groups findings by severity: Critical, High, Medium, Low, and separates OS-level vulnerabilities from language-specific ones (such as Python packages).
+In practice, most vulnerabilities come from the base image rather than the application itself.
 
-Critical and High CVEs with available fixes should be addressed. The fix is almost always: update the base image and rebuild. Image maintainers push patched versions of their images when CVEs are fixed. Pulling and rebuilding picks up the patches.
+Critical and High CVEs should be investigated first. If they originate from the base image, the correct fix is to update to a supported and patched base image and rebuild. If they come from application dependencies, they require upgrading the affected packages in requirements.txt.
 
-Medium and Low CVEs require judgment. Many are in packages that are installed but never executed by the application — development headers, documentation tools, optional features. A CVE in a package the application never calls has a different risk profile than a CVE in a package called on every request.
+Medium and Low CVEs require context. Some belong to components that are installed but never used at runtime. These still appear in scans but do not always represent immediate risk. The goal is not to eliminate every finding, but to understand which ones are relevant to the running application.
 
-The most important output from a scanner is the trend: is the count going up or down? A freshly built image that passes a scan clean is a baseline. An image that was clean last month and now shows two Critical CVEs has drifted — something in the supply chain has been patched and the image needs a rebuild.
+One of the most important signals from a scan is the state of the base OS. An “unsupported OS version” warning indicates that vulnerabilities will accumulate over time with no available fixes. In this case, rebuilding alone is not sufficient — the base image itself must be upgraded.
 
-Scanning is not a one-time activity. It belongs in the CI/CD pipeline, running on every image build, with alerts when new Critical or High CVEs appear.
+Scanning is not a one-time activity. Images that are secure today can become vulnerable as new CVEs are published. In production systems, scanning is integrated into CI/CD pipelines, and images are rebuilt regularly to pick up security updates from base images and dependencies.
 
 
 
 ## 6. Commands
 
 ```bash
-# ── Credentials via .env ───────────────────────────────────────────────────
-
-# Create .env file (once — never commit this)
-cat > .env << 'EOF'
-DB_USER=appuser
-DB_PASSWORD=your_secure_password_here
-EOF
-
-# Verify compose can read the variables
-docker compose config | grep -A5 "environment"
-
-# Confirm the variable is present inside the container
-docker compose exec backend env | grep DB_PASSWORD
-
 # ── Checking and Dropping Capabilities ────────────────────────────────────
 
 # View current capabilities on a running container
@@ -531,7 +498,7 @@ docker inspect $(docker compose ps -q backend) \
 # After adding cap_drop: ALL — confirm
 docker inspect $(docker compose ps -q backend) \
   --format='{{.HostConfig.CapDrop}}'
-# Should show: [ALL]
+# Expected: [ALL]
 
 # ── Read-Only Filesystem ──────────────────────────────────────────────────
 
@@ -539,36 +506,36 @@ docker inspect $(docker compose ps -q backend) \
 docker inspect $(docker compose ps -q backend) \
   --format='ReadOnly={{.HostConfig.ReadonlyRootfs}}'
 
-# Test read-only enforcement from inside the container
+# Test read-only enforcement
 docker compose exec backend touch /app/test.txt
-# Expected: touch: /app/test.txt: Read-only file system
+# Expected: Read-only file system
 
-# Confirm tmpfs mounts are writable
+# Confirm tmpfs is writable
 docker compose exec backend touch /tmp/test.txt
-# Expected: success (tmpfs is writable)
+# Expected: success
 
 # ── Port Binding ──────────────────────────────────────────────────────────
 
-# Check what interfaces ports are bound to on the host
+# Check port bindings
 docker compose ps
-# Look for 127.0.0.1:5000->5000/tcp vs 0.0.0.0:5000->5000/tcp
+# Look for:
+# 127.0.0.1:5000->5000/tcp (restricted)
+# vs 0.0.0.0:5000->5000/tcp (exposed)
 
 # Alternative check
 ss -tlnp | grep 5000
-# Should show 127.0.0.1:5000 not 0.0.0.0:5000
+# Expected: bound to 127.0.0.1 only
 
-# ── Vulnerability Scanning ────────────────────────────────────────────────
+# ── Vulnerability Scanning (Trivy) ─────────────────────────────────────────
 
-# Quick overview (requires Docker Desktop or docker scout CLI)
-docker scout quickview backend:v1
-
-# CVEs by severity
-docker scout cves backend:v1
-docker scout cves backend:v1 --only-severity critical,high
-
-# Alternative: trivy (open source, works without Docker Desktop)
+# Full scan
 trivy image backend:v1
+
+# Focus on high-impact issues
 trivy image --severity CRITICAL,HIGH backend:v1
+
+# Show OS details detected by Trivy
+trivy image --format table backend:v1 | grep alpine
 
 # ── Full Security Audit of a Container ────────────────────────────────────
 
@@ -591,7 +558,7 @@ None of these are exotic attacks. They are the standard playbook for anyone prob
 
 The `.env` pattern is appropriate for development and simple single-server deployments. For anything more sensitive — financial data, health data, regulated industries — Docker Secrets, HashiCorp Vault, or the cloud provider's secrets manager is the right tool. The key property these provide that `.env` does not: the secret is never written to disk on the host. It is fetched at runtime and injected directly into the container's memory.
 
-Capability dropping occasionally breaks things, and the first time it does the instinct is to add the capability back. The better approach is to understand which capability is needed and add only that one. `strace` inside the container can show exactly which system calls an application makes — and from there, which capabilities it actually requires. For a Flask app serving HTTP and connecting to Postgres, the list is very short.
+Capability dropping occasionally breaks things, and the first time it does the instinct is to add the capability back. The better approach is to understand which capability is needed and add only that one. `strace` inside the container can show exactly which system calls an application makes and from there, which capabilities it actually requires. For a Flask app serving HTTP and connecting to Postgres, the list is very short.
 
 Image vulnerability scanning should be integrated into the build pipeline, not run manually. The gap between when a CVE is published and when the image is rebuilt is the window of exposure. A pipeline that scans every build and fails on new Critical CVEs closes that window automatically. Most CI systems (GitHub Actions, GitLab CI, Jenkins) have ready-made integrations for `trivy` that take under ten minutes to set up.
 
@@ -713,20 +680,19 @@ Now try to confirm external access is blocked — if you have a second machine o
 Scan the backend image:
 
 ```bash
-# With docker scout (Docker Desktop)
-docker scout quickview backend:v1
 
-# With trivy (install: https://aquasecurity.github.io/trivy)
+# With trivy
 trivy image backend:v1
 ```
 
 Read the output. Note how many Critical and High CVEs exist. Then pull the latest base image and rebuild:
 
 ```bash
-docker pull python:3.11.9-slim
+docker pull python:3.14-alpine3.23
 docker compose build --no-cache backend
 trivy image backend:v1
 ```
+
 
 Compare the CVE counts before and after the rebuild. A reduced count means the image maintainer has pushed patches that your rebuild picked up. This is the build-and-scan cycle that keeps images current.
 
