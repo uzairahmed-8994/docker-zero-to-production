@@ -59,6 +59,14 @@ init_db()
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
+# _leak = []
+
+# @app.route("/leak")
+# def leak():
+#     _leak.append(" " * 10_000_000)  # allocate ~10MB per request
+#     return jsonify({"allocated_chunks": len(_leak)})
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"}), 200

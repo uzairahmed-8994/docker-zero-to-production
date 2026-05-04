@@ -22,7 +22,7 @@ Without resource limits, containers on a shared host compete for resources with 
 
 ## 2. What Happened (Experience)
 
-The stack from step 20 was running with health checks and restart policies. I had been thinking about what could still go wrong that the current setup could not handle. Memory leaks were the obvious gap. I had seen restart policies recover from crashes — but a slow memory leak does not crash the process immediately. It degrades the whole machine gradually until something else gives way.
+The stack from step 20 was running with health checks and restart policies. I had been thinking about what could still go wrong that the current setup could not handle. Memory leaks were the obvious gap. I had seen restart policies recover from crashes but a slow memory leak does not crash the process immediately. It degrades the whole machine gradually until something else gives way.
 
 I decided to understand the resource situation properly before it became a problem.
 
@@ -55,7 +55,7 @@ def leak():
     return jsonify({"allocated_chunks": len(_leak)})
 ```
 
-I hit the endpoint several times and watched `docker stats`:
+I hit the endpoint (curl http://localhost:5000/leak) several times and watched `docker stats`:
 
 ```bash
 watch -n 1 docker stats --no-stream
@@ -179,7 +179,7 @@ Memory in bytes: 536870912 / 1024 / 1024 = 512MB. NanoCPUs: 500000000 / 10000000
 
 **Step 6 — Watching the memory limit enforce itself**
 
-I re-introduced the memory leak route to see what would happen when the container hit its limit:
+I re-introduced the memory leak route to observe how the container behaves under memory pressure:
 
 ```python
 _leak = []
@@ -190,34 +190,37 @@ def leak():
     return jsonify({"allocated_chunks": len(_leak)})
 ```
 
-Rebuilt the backend and hit the endpoint repeatedly while watching `docker stats`:
+After rebuilding the backend, I triggered the leak repeatedly:
+```bash
+for i in $(seq 1 120); do curl -s http://localhost:5000/leak > /dev/null; done
+```
+The container stayed running. At first glance, it looked like the memory limit was not working — there was no crash, no restart, and the service continued responding.
+
+However, the logs revealed what was actually happening:
 
 ```bash
-watch -n 1 docker stats --no-stream
+docker compose logs backend
+# Worker (pid:7) was sent SIGKILL! Perhaps out of memory?
+# Booting worker with pid: 50
+# Worker (pid:50) was sent SIGKILL! Perhaps out of memory?
+# Booting worker with pid: 57
+...
 ```
 
-```
-CONTAINER   MEM USAGE / LIMIT    MEM %
-backend     52.3MiB / 512MiB     10.2%
-backend     152.4MiB / 512MiB    29.8%
-backend     252.5MiB / 512MiB    49.3%
-backend     352.6MiB / 512MiB    68.9%
-backend     452.7MiB / 512MiB    88.5%
-backend     499.1MiB / 512MiB    97.5%
-```
+The container had reached its memory limit (~512MB), and the Linux OOM killer was actively terminating processes inside it.
 
-At around 512MB, the process inside the container was killed by the OOM killer. The container exited with a non-zero code. The restart policy (`on-failure`) triggered. The backend restarted, came back healthy, and the leak was gone — because the process state was wiped on restart.
+Because the backend runs under Gunicorn with multiple workers, the OOM killer targeted individual worker processes rather than the main process. Each time a worker was killed, Gunicorn detected the failure and immediately spawned a replacement.
 
-```bash
-docker compose ps
-```
+This resulted in a continuous cycle:
 
-```
-NAME      SERVICE   STATUS    PORTS
-backend   backend   healthy   0.0.0.0:5000->5000/tcp
-```
+Memory pressure builds up
+A worker process is killed
+Gunicorn replaces the worker
+The container continues running
 
-The memory leak had been contained. The host never came under pressure. The database and frontend stayed healthy throughout. The limit did exactly what it was supposed to do — it drew a line, the container hit the line, and the restart policy handled the recovery.
+The main process (PID 1) remained alive, so the container never exited and the restart policy was not triggered.
+
+The limit still did exactly what it was supposed to do — it contained the memory usage and prevented the system from being overwhelmed.
 
 I removed the leak route and rebuilt.
 
@@ -236,9 +239,13 @@ print('done')
 "
 ```
 
-While that ran, I watched CPU usage in `docker stats`. The backend's CPU stayed around 50% of a single core — matching the `0.5` limit — while the rest of the host remained available to the database and frontend. Without the limit, this busy loop would have consumed 100% of a full core.
+While this was running, I monitored usage with docker stats.
 
-The throttling is not visible in the same dramatic way as hitting a memory limit. The container does not crash. It runs slower. That is the intended behaviour — CPU limits shape the resource usage without stopping the process.
+The backend stayed around 50% CPU usage, matching the 0.5 limit, while the rest of the system remained available for other services. Without the limit, the same loop would consume a full core.
+
+Unlike memory limits, CPU limits do not terminate processes. They throttle execution. The container continues running, but at a controlled rate.
+
+This is the intended behavior — CPU limits shape resource usage without interrupting the application.
 
 
 
@@ -252,8 +259,20 @@ These limits are enforced by the kernel, not by Docker. Docker is configuring ke
 
 Without limits, every container shares the host's cgroup at the root level, where there is no ceiling. All containers compete for the full resources of the host with no rules.
 
+```mermaid
+flowchart TB
+    Host["Host (8GB Memory)"]
 
+    subgraph Container["Container Limit (512MB)"]
+        A["Process 1"]
+        B["Process 2"]
+        C["Process 3"]
+    end
 
+    Host --> Container
+    Container -->|"tries to use more memory"| Limit["512MB ceiling"]
+    Limit -->|"limit hit"| OOM["Kill a process"]
+```
 ## 4. Solution
 
 Complete resource limit configuration for all three services:
@@ -265,24 +284,24 @@ services:
   frontend:
     build: ./frontend
     restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 256m
-        reservations:
-          cpus: "0.1"
-          memory: 128m
+    mem_limit: 256m
+    cpus: '0.25'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "5001:5001"
     environment:
       - BACKEND_URL=http://backend:5000
+
     networks:
       - frontend-network
     depends_on:
@@ -291,24 +310,24 @@ services:
 
   backend:
     build: ./backend
-    image: backend:v1
     restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512m
-        reservations:
-          cpus: "0.25"
-          memory: 256m
+    mem_limit: 512m
+    cpus: '0.5'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 15s
+    image: backend:v1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "5000:5000"
+
     environment:
       - DB_HOST=db
       - DB_PORT=5432
@@ -323,30 +342,29 @@ services:
         condition: service_healthy
 
   db:
-    image: postgres:15
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512m
-        reservations:
-          cpus: "0.25"
-          memory: 256m
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    environment:
-      - POSTGRES_DB=appdb
-      - POSTGRES_USER=appuser
-      - POSTGRES_PASSWORD=secret
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - backend-network
+      image: postgres:15
+      restart: unless-stopped
+      mem_limit: 512m
+      cpus: '0.5'
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+        interval: 5s
+        timeout: 5s
+        retries: 5
+        start_period: 20s
+      logging:
+        driver: json-file
+        options:
+          max-size: "10m"
+          max-file: "3"
+      environment:
+        - POSTGRES_DB=appdb
+        - POSTGRES_USER=appuser
+        - POSTGRES_PASSWORD=secret
+      volumes:
+        - postgres-data:/var/lib/postgresql/data
+      networks:
+        - backend-network
 
 volumes:
   postgres-data:
@@ -364,11 +382,11 @@ No Dockerfile changes. No application code changes. Resource limits are containe
 
 ### Memory Limit vs Memory Reservation
 
-`limits.memory` is a hard ceiling. If the container tries to exceed it, the OOM killer intervenes. The container does not get to negotiate — the kernel terminates the process that caused the breach.
+`mem_limit` in Docker Compose is a hard ceiling. If the container tries to exceed it, the kernel enforces the limit and may terminate processes inside the container.
 
-`reservations.memory` is a soft request. It tells the scheduler "this container needs at least this much memory to function." In Docker Compose on a single host, the reservation is documented but not enforced in the same way as in a cluster — Docker will not refuse to start the container if the host is under memory pressure. In Swarm or Kubernetes, reservations are used for placement decisions: a node must have at least `reservations.memory` available to receive this container.
+Docker Compose (non-Swarm mode) does not support memory reservations in a meaningful way. There is no scheduler making placement decisions, and Docker will not prevent a container from starting based on available memory.
 
-Setting a reservation slightly below the expected idle usage, and a limit significantly above the expected peak usage, is a sensible baseline. The reservation communicates the minimum requirement. The limit caps the pathological case.
+Concepts like `reservations.memory` belong to orchestrated environments such as Docker Swarm or Kubernetes, where they are used to decide where containers can be scheduled.
 
 ### The OOM Killer and What It Terminates
 
@@ -376,15 +394,21 @@ When a container hits its memory limit, the Linux kernel's OOM killer selects a 
 
 For the backend, PID 1 is Gunicorn's master process. The workers are child processes. If a worker causes the OOM breach, the OOM killer may kill the worker or the master depending on which has the higher score. If the master is killed, the container exits (because PID 1 died) and the restart policy takes over. If a worker is killed but the master survives, Gunicorn may spawn a replacement worker without the container exiting at all.
 
-This means hitting a memory limit does not always produce a visible container restart. Sometimes Gunicorn handles the killed worker internally. The signal is in `docker stats` — memory usage dropping suddenly back to baseline — and in `dmesg` or system logs where the OOM kill event is recorded.
+This means hitting a memory limit does not always produce a visible container restart. Sometimes Gunicorn handles the killed worker internally. The signal is in `docker stats` — memory usage dropping suddenly back to baseline and in `dmesg` or system logs where the OOM kill event is recorded.
 
 ### CPU Limits — Throttling vs Starvation
 
-The `cpus` limit controls the maximum CPU the container can consume. It does not control what happens when the container is not using its full allocation — another container is free to use that CPU capacity. The limit is a ceiling on consumption, not a reservation of capacity.
+The `cpus` setting defines a hard upper bound on how much CPU time a container can consume. It does not reserve CPU — if the container is idle, other containers are free to use the available capacity. The limit acts as a ceiling, not a guarantee.
 
-`reservations.cpus` sets a minimum priority. In a Swarm or Kubernetes environment, it influences placement. On a single host with Docker Compose, it primarily documents the intent: this service requires at least this much CPU to function correctly.
+When a container rezaches its CPU limit, the Linux scheduler throttles it. The process is paused periodically to ensure it does not exceed its allotted share. The container continues running, but more slowly.
 
-Setting CPU limits too low is a real operational hazard. Postgres is particularly sensitive — if CPU is throttled heavily during a write-heavy workload, transactions take longer to commit, locks are held longer, and concurrency degrades significantly. A Postgres instance with `cpus: 0.1` on a busy workload will appear to be functioning but will be orders of magnitude slower than it should be. The CPU usage in `docker stats` will show it consistently pinned at its limit — a sign that the limit is too tight.
+Unlike memory limits, CPU limits do not terminate processes. They shape performance rather than causing failure.
+
+Concepts like `reservations.cpus` belong to orchestrated environments such as Docker Swarm or Kubernetes. In those systems, reservations are used by the scheduler to decide where workloads can be placed. In standalone Docker Compose, this concept is not enforced and has no practical effect.
+
+Setting CPU limits too low is a real operational hazard. Postgres is particularly sensitive — under heavy write workloads, aggressive CPU throttling increases transaction latency, extends lock durations, and reduces overall concurrency. The service may appear healthy but perform significantly worse than expected.
+
+A useful signal is `docker stats`: if CPU usage is consistently pinned at the configured limit, the container is being throttled and may require a higher allocation.
 
 ### `docker stats` — Reading It Correctly
 
@@ -407,7 +431,6 @@ The output refreshes every second by default. The important columns:
 ```bash
 docker stats --no-stream          # single snapshot, useful in scripts
 docker stats backend              # single container only
-docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"  # custom columns
 ```
 
 ### Sizing Limits for Your Stack
@@ -432,7 +455,6 @@ Postgres is a special case. It is aggressive about using available memory for ca
 docker stats                                     # live usage for all containers
 docker stats --no-stream                         # single snapshot
 docker stats backend                             # single container
-docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
 
 # ── Verifying Limits Are Applied ──────────────────────────────────────────
 
@@ -476,7 +498,7 @@ sudo dmesg | grep -i "memory cgroup"
 
 Resource limits are one of the most commonly skipped steps in Docker deployments, and one of the most commonly regretted ones. The typical sequence is: deploy without limits, run in production for weeks, one service develops a memory leak or gets hit with unusual traffic, it consumes the entire host, the OOM killer starts terminating processes at random, everything goes down. Post-incident, limits get added. They should have been there from the start.
 
-The `deploy.resources` syntax in docker-compose.yml is the Compose v3 syntax that is also understood by Docker Swarm. This is deliberate design — the same Compose file can be deployed to a single host with `docker compose up` or to a Swarm cluster with `docker stack deploy`, and the resource limits transfer correctly. When migrating to Kubernetes, the `limits` and `reservations` map directly to Kubernetes resource `limits` and `requests`, with the same semantics.
+In this setup, limits are applied using `mem_limit` and `cpus` in Docker Compose. These map directly to Linux cgroups and are enforced by the kernel. They are hard limits — the container cannot exceed them under normal operation.
 
 Postgres deserves special attention when setting memory limits. Postgres reads its `shared_buffers` configuration on startup and expects to allocate that memory immediately. If `shared_buffers` in the Postgres config is larger than the container's memory limit, Postgres will fail to start. The default `shared_buffers` in Postgres 15 is 128MB. A container memory limit below 256MB is likely to cause Postgres startup problems, even before accounting for working memory and OS overhead.
 
@@ -568,7 +590,7 @@ In another terminal, hit the leak endpoint repeatedly:
 for i in $(seq 1 60); do curl -s http://localhost:5000/leak; sleep 0.5; done
 ```
 
-Watch the memory usage climb toward the limit. When it hits the ceiling, observe the container restart (visible in `docker compose ps`). After the restart, confirm the memory usage returns to the idle baseline — the restart cleared the leak. Remove the leak route and rebuild when done.
+Watch the memory usage climb toward the limit.
 
 **Exercise 6 — CPU limit observation**
 
