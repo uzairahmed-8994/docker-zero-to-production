@@ -28,27 +28,32 @@ I wanted to understand how images actually move between machines in real deploym
 
 **Step 1 — Understanding what already exists locally**
 
-I looked at what images were in my local Docker cache:
+I looked at what images were in my local Docker images:
 
 ```bash
 docker image ls
 ```
 
 ```
-REPOSITORY   TAG       IMAGE ID       CREATED         SIZE
-backend      v1        a1b2c3d4e5f6   2 hours ago     195MB
-frontend     latest    b2c3d4e5f6a7   2 hours ago     148MB
-python       3.11.9-slim  c3d4e5f6a7b8  3 days ago   130MB
-postgres     15        d4e5f6a7b8c9   5 days ago      379MB
+REPOSITORY                                   TAG       IMAGE ID       SIZE
+22-security-best-practices-frontend         latest    aa12981f1ee0   233MB
+21-resource-limits-frontend                 latest    87cb93cdfe88   233MB
+20-restart-policies-frontend                latest    600b6edc22d3   233MB
+backend                                     v1        a7bd67ba6eea   107MB
+postgres                                    15        29342cb52157   633MB
+python                                      3.11-slim 6d85378d88a1   188MB
 ```
+Over time, multiple images accumulated as I progressed through each step. Each step produced its own image, often with similar content but different tags. This is a normal part of working with Docker locally — images build up quickly and are isolated to the machine they were created on.
 
-These images existed only on this machine. No other machine knew they existed. The `backend:v1` image I had been building and hardening across the previous nine steps was trapped on my local disk.
+Despite having multiple images available locally, none of them exist outside this machine. Even the hardened `backend:v1` image — which represents the final version of the application so far — is not accessible to any other system. Without a registry, these images cannot be shared, deployed elsewhere, or reused in a different environment.
 
-I also noticed the tagging scheme. `backend:v1` was a reasonable local name. But if I were going to push this to a shared registry, the name needed to say more — specifically, it needed to say where the image came from and who it belonged to. A tag like `v1` has no namespace. On Docker Hub, image names follow the pattern `username/repository:tag`. On a private registry, they follow `registry-hostname/repository:tag`.
+At this point, the image is the artifact — not the source code.
+
+I also noticed the tagging scheme. `backend:v1` was a reasonable local name. But if I were going to push this to a shared registry, the name needed to say more — specifically, it needed to say where the image came from and who it belonged to. A tag like `v1` has no namespace and cannot be uniquely identified outside this machine. On Docker Hub, image names follow the pattern `username/repository:tag`. On a private registry, they follow `registry-hostname/repository:tag`.
 
 **Step 2 — Creating a Docker Hub account and repository**
 
-Docker Hub is the default public registry that Docker uses when no registry is specified. When you run `docker pull python:3.11.9-slim`, Docker pulls from Docker Hub. It is free for public repositories and has a free tier for private repositories.
+Docker Hub is the default public registry that Docker uses when no registry is specified. When you run `docker pull python:3.11.9-alpine`, Docker pulls from Docker Hub. It is free for public repositories and has a free tier for private repositories.
 
 I created an account at `hub.docker.com` and noted my username — I will use `myusername` throughout this step as a placeholder. The actual username matters because it becomes part of the image name.
 
@@ -70,8 +75,8 @@ docker image ls | grep backend
 
 ```
 REPOSITORY           TAG   IMAGE ID       CREATED       SIZE
-backend              v1    a1b2c3d4e5f6   2 hours ago   195MB
-myusername/backend   v1    a1b2c3d4e5f6   2 hours ago   195MB
+backend              v1    a1b2c3d4e5f6   2 hours ago   134MB
+myusername/backend   v1    a1b2c3d4e5f6   2 hours ago   134MB
 ```
 
 Same `IMAGE ID`. Same layers. Two names pointing to the same content.
@@ -102,15 +107,18 @@ docker push myusername/backend:v1
 
 ```
 The push refers to repository [docker.io/myusername/backend]
-f1a2b3c4d5e6: Pushing  52.4MB/127MB
-a2b3c4d5e6f7: Pushed
-b3c4d5e6f7a8: Layer already exists
-c4d5e6f7a8b9: Layer already exists
-d5e6f7a8b9c0: Layer already exists
-v1: digest: sha256:abc123... size: 2847
+3cad28925b22: Pushed 
+43c4264eed91: Pushed 
+b9afd1f50702: Pushed 
+8068c973c3ec: Pushed 
+5e0fd4a18ee0: Pushed 
+6401c4fbc854: Pushed 
+aa7d806471fd: Pushed 
+4fb8bf29adcb: Pushed 
+258d54c958ed: Pushed 
+420e49ae696c: Pushed 
+v1: digest: sha256:a7bd6.... size: 856
 ```
-
-Several layers showed `Layer already exists`. Those were the base image layers — `python:3.11.9-slim` was already on Docker Hub (it lives there), so Docker did not need to upload them. Only the layers that were unique to my image — the installed packages and the application code — were actually transferred. The push took about 20 seconds instead of the several minutes it would have taken to upload 195MB from scratch.
 
 I pushed the `latest` tag as well:
 
@@ -120,7 +128,7 @@ docker push myusername/backend:latest
 
 ```
 The push refers to repository [docker.io/myusername/backend]
-v1: digest: sha256:abc123... size: 2847
+latest: digest: sha256:a7bd67ba6... size: 856
 ```
 
 Instant. Docker recognised that `latest` pointed to the same image as `v1` — the same digest — so there was nothing new to push. Only the tag reference was updated.
@@ -141,21 +149,25 @@ docker pull myusername/backend:v1
 
 ```
 v1: Pulling from myusername/backend
-a1b2c3d4: Pull complete
-b2c3d4e5: Pull complete
-c3d4e5f6: Pull complete
-d4e5f6a7: Pull complete
-Digest: sha256:abc123...
+6401c4fbc854: Pull complete 
+5e0fd4a18ee0: Pull complete 
+258d54c958ed: Pull complete 
+4fb8bf29adcb: Pull complete 
+3cad28925b22: Download complete 
+Digest: sha256:a7bd6...
 Status: Downloaded newer image for myusername/backend:v1
+docker.io/myusername/backend:v1
 ```
 
 The image came down. I ran it directly without any source code present:
 
 ```bash
-docker run --rm -e DB_HOST=localhost myusername/backend:v1 python -c "import app; print('import ok')"
+docker run --rm myusername/backend:v1 python -c "print('container runs')"
 ```
 
-The import worked. The image contained everything needed to run the application — the Python interpreter, the installed packages, and the application code. No source code, no build step, no Python installation required on the host.
+The container started successfully and executed the command. The image contained everything needed to run the application code itself — the Python interpreter, the installed packages, and the application files.
+
+The backend application still depends on a database at runtime. Running the container in isolation without a database will not start the full service, but the image itself is complete and portable.
 
 **Step 6 — Running a private registry locally**
 
