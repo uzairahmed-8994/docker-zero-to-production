@@ -22,7 +22,7 @@ Beyond rollback and auditability, there is a subtler problem: multiple environme
 
 ## 2. What Happened (Experience)
 
-After pushing `backend:v1` to the registry in step 23, I made a small change to `app.py` — added a log statement — and rebuilt the image. Without thinking, I tagged it `backend:v1` again and pushed.
+After pushing `backend:v1` to the registry in step 23, I made a small change to `app.py` added a log statement and rebuilt the image. Without thinking, I tagged it `backend:v1` again and pushed.
 
 ```bash
 docker push myusername/backend:v1
@@ -71,7 +71,7 @@ docker tag myusername/backend:v1.0.0 myusername/backend:latest
 
 Four tags, one image. The relationship between them:
 
-`v1.0.0` — immutable. Never moved. Points to this exact build forever.
+`v1.0.0` — treated as immutable by convention. It should never be moved once published.
 `v1.0` — moves forward when `v1.0.1`, `v1.0.2` are released. Always the latest patch in the 1.0 series.
 `v1` — moves forward when `v1.1.0`, `v1.2.0` are released. Always the latest minor in the v1 major.
 `latest` — moves forward on every release. Always the newest stable build.
@@ -80,7 +80,7 @@ The convention: production deployments reference `v1.0.0`. Development environme
 
 **Step 3 — Git commit tags for CI builds**
 
-Semantic versions are for releases. But between releases, the CI pipeline builds images on every commit. Those builds need tags too — and the natural tag for a CI build is the git commit hash that produced it.
+Semantic versions are for releases. But between releases, the CI pipeline builds images on every commit. Those builds need tags too and the natural tag for a CI build is the git commit hash that produced it.
 
 I introduced this into the build process:
 
@@ -92,22 +92,22 @@ docker build -t myusername/backend:git-${GIT_SHA} ./backend
 ```bash
 GIT_SHA=$(git rev-parse --short HEAD)
 echo $GIT_SHA
-# a1b2c3d
+# 202ce26
 ```
 
-The image was now tagged `myusername/backend:git-a1b2c3d`. Every commit that goes through CI produces a uniquely tagged image. The tag is immutable by design — the git commit SHA never changes, so the tag never needs to move.
+The image was now tagged `myusername/backend:git-202ce26`. Every commit that goes through CI produces a uniquely tagged image. The tag is immutable by design — the git commit SHA never changes, so the tag never needs to move.
 
 I pushed it:
 
 ```bash
-docker push myusername/backend:git-a1b2c3d
+docker push myusername/backend:git-202ce26
 ```
 
-Now I could answer "what code is in this image" by looking at the tag. `git show a1b2c3d` showed exactly what changed in that commit. The image and the source code were linked.
+Now I could answer "what code is in this image" by looking at the tag. `git show 202ce26` showed exactly what changed in that commit. The image and the source code were linked.
 
 **Step 4 — Build timestamps for operational clarity**
 
-Git SHAs are precise but not human-readable at a glance. When scanning a list of images in the registry, `git-a1b2c3d` does not immediately tell you whether this image is from this morning or from three weeks ago. I added a timestamp tag alongside the git tag:
+Git SHAs are precise but not human-readable at a glance. When scanning a list of images in the registry, `git-202ce26` does not immediately tell you whether this image is from this morning or from three weeks ago. I added a timestamp tag alongside the git tag:
 
 ```bash
 BUILD_TIME=$(date -u +%Y%m%d-%H%M%S)
@@ -116,29 +116,24 @@ GIT_SHA=$(git rev-parse --short HEAD)
 docker tag myusername/backend:git-${GIT_SHA} myusername/backend:${BUILD_TIME}-${GIT_SHA}
 ```
 
-The resulting tag: `myusername/backend:20260428-103022-a1b2c3d`. Ugly, but immediately informative. From this tag alone I could tell the image was built on April 28th 2026 at 10:30 UTC from commit `a1b2c3d`. No registry UI, no metadata lookup needed.
 
-I checked the full tag list in the registry:
+The resulting tag: `myusername/backend:20260507-071229-202ce26`. Ugly, but immediately informative. From this tag alone I could tell the image was built on May 7th 2026 at 07:12 UTC from commit `202ce26`. No registry UI, no metadata lookup needed.
+
+I checked the local image list after tagging:
 
 ```bash
-curl http://localhost:5005/v2/backend/tags/list
+docker images | grep backend
+
+# myusername/backend:20260507-071229-202ce26
+# myusername/backend:git-202ce26
+# myusername/backend:latest
+# myusername/backend:v1
+# myusername/backend:v1.0
+# myusername/backend:v1.0.0
 ```
 
-```json
-{
-  "name": "backend",
-  "tags": [
-    "v1.0.0",
-    "v1.0",
-    "v1",
-    "latest",
-    "git-a1b2c3d",
-    "20260428-103022-a1b2c3d"
-  ]
-}
-```
 
-Six tags, one image. Each tag served a different audience: `v1.0.0` for deployment scripts that need a stable pinned reference, `git-a1b2c3d` for developers tracing a bug back to a commit, `20260428-103022-a1b2c3d` for operators scanning the registry for stale images.
+All of these tags pointed to the same underlying image. Docker tags are lightweight references — creating additional tags does not duplicate the image or consume additional storage. Multiple tags can point to the same image digest simultaneously.
 
 **Step 5 — Building the tagging into a script**
 
@@ -184,7 +179,8 @@ if [ "${VERSION}" != "dev" ]; then
 fi
 
 echo "Done. Image: ${IMAGE_NAME}:${VERSION}"
-echo "Digest: $(docker inspect ${IMAGE_NAME}:${VERSION} --format='{{index .RepoDigests 0}}')"
+echo "Image tag: ${IMAGE_NAME}:${VERSION}"
+docker manifest inspect ${IMAGE_NAME}:${VERSION} | grep digest | head -1
 ```
 
 I ran it for a release:
@@ -223,25 +219,28 @@ To deploy a new version, I changed the tag in the compose file to `v1.0.2`, comm
 
 **Step 7 — Verifying what actually ran**
 
-After deployment, I verified which image was running by checking the digest:
+After deployment, I verified which image tag the running container referenced:
 
 ```bash
 docker inspect $(docker compose ps -q backend) \
-  --format='{{index .RepoDigests 0}}'
+  --format='{{.Config.Image}}'
 ```
 
 ```
-myusername/backend@sha256:newdigest...
+<myusername>/backend:v1.0.1
 ```
 
-And cross-referenced it against the registry:
+The running backend container was using the expected version tag from docker-compose.yml.
+
+I then checked the registry manifest for that tag:
 
 ```bash
-docker manifest inspect myusername/backend:v1.0.1 | grep digest | head -1
+docker manifest inspect <myusername>/backend:v1.0.1 | grep digest | head -1
 ```
 
-Same digest. The container running on the server was exactly the image I had pushed. Not a rebuild, not a different version — the exact same bytes.
+The registry digest uniquely identified the exact image contents associated with the v1.0.1 tag.
 
+Tags are human-friendly references, but the digest is the immutable identity of the image. Multiple tags can point to the same digest, but a digest always represents one exact image build.
 
 
 ## 3. Why It Happens
@@ -266,7 +265,7 @@ The complete tagging approach for this stack, encoded in a build script:
 #!/bin/bash
 set -e
 
-IMAGE_NAME="${REGISTRY:-myusername}/backend"
+IMAGE_NAME="${REGISTRY:-<myusername>}/backend"
 GIT_SHA=$(git rev-parse --short HEAD)
 BUILD_TIME=$(date -u +%Y%m%d-%H%M%S)
 VERSION=${1:-"dev"}
@@ -289,7 +288,8 @@ if [ "${VERSION}" != "dev" ]; then
   docker push ${IMAGE_NAME}:latest
 fi
 
-echo "Digest: $(docker inspect ${IMAGE_NAME}:${VERSION} --format='{{index .RepoDigests 0}}')"
+echo "Image tag: ${IMAGE_NAME}:${VERSION}"
+docker manifest inspect ${IMAGE_NAME}:${VERSION} | grep digest | head -1
 ```
 
 **`docker-compose.yml` — pin to a specific version tag:**
@@ -297,13 +297,13 @@ echo "Digest: $(docker inspect ${IMAGE_NAME}:${VERSION} --format='{{index .RepoD
 ```yaml
 services:
   backend:
-    image: myusername/backend:v1.0.1   # pinned — change this to deploy a new version
+    image: <myusername>/backend:v1.0.1   # pinned — change this to deploy a new version
     # build: ./backend                  # commented out on production
     restart: on-failure
     # ... rest of config
 
   frontend:
-    image: myusername/frontend:v1.0.1
+    image: <myusername>/frontend:v1.0.1
     # build: ./frontend
     restart: on-failure
     # ... rest of config
@@ -324,7 +324,7 @@ docker compose up -d
 
 # 4. Verify the correct image is running
 docker inspect $(docker compose ps -q backend) \
-  --format='{{index .RepoDigests 0}}'
+  --format='{{.Config.Image}}'
 ```
 
 **Rolling back:**
@@ -352,9 +352,18 @@ When a tag is mutable, `docker pull myusername/backend:v1.0.0` is not guaranteed
 
 The practical takeaway: tag names are for human readability and operational convenience. Digests are the source of truth. Production deployments that matter should record the digest of what was deployed, even if they use a tag name for convenience during the pull.
 
+```mermaid
+flowchart LR
+    Tag[v1.0.1 Tag] --> Digest[sha256:abc123]
+    Digest --> Layers[Image Layers]
+
+    Latest[latest Tag] --> Digest
+    V1[v1 Tag] --> Digest
+```
+
 ### The Floating Tag Pattern
 
-The four-tier tag structure — `v1.0.0`, `v1.0`, `v1`, `latest` — is a pattern borrowed from language runtime images. The official Python image uses exactly this: `python:3.11.9` is immutable, `python:3.11` floats to the latest 3.11.x, `python:3` floats to the latest Python 3.x.
+The four-tier tag structure `v1.0.0`, `v1.0`, `v1`, `latest` is a pattern borrowed from language runtime images. The official Python image uses exactly this: `python:3.11.9` is immutable, `python:3.11` floats to the latest 3.11.x, `python:3` floats to the latest Python 3.x.
 
 The value of floating tags is that consumers can choose their own stability level. An automated testing environment that wants the latest code can pull `latest`. A staging environment that wants to test against the current minor version can pin to `v1.0`. A production environment that needs absolute stability pins to `v1.0.0`.
 
@@ -425,7 +434,7 @@ Reading the labels of a running container:
 
 ```bash
 docker inspect $(docker compose ps -q backend) \
-  --format='{{json .Config.Labels}}' | python -m json.tool
+  --format='{{json .Config.Labels}}' | python3 -m json.tool
 ```
 
 ```json
@@ -477,19 +486,18 @@ docker build \
 # ── Inspecting Tags and Labels ─────────────────────────────────────────────
 
 # List all local tags for a repository
-docker image ls myusername/backend
+docker image ls <myusername>/backend
 
 # View labels on a local image
-docker inspect myusername/backend:v1.0.1 \
-  --format='{{json .Config.Labels}}' | python -m json.tool
+docker inspect <myusername>/backend:v1.0.1 \
+  --format='{{json .Config.Labels}}' | python3 -m json.tool
 
 # View labels on a running container
 docker inspect $(docker compose ps -q backend) \
-  --format='{{json .Config.Labels}}' | python -m json.tool
+  --format='{{json .Config.Labels}}' | python3 -m json.tool
 
-# Get the digest of a tagged image
-docker inspect myusername/backend:v1.0.1 \
-  --format='{{index .RepoDigests 0}}'
+# Get the registry digest for a tag
+docker manifest inspect <myusername>/backend:v1.0.1 | grep digest | head -1
 
 # ── Build With Labels ──────────────────────────────────────────────────────
 
@@ -497,13 +505,13 @@ docker build \
   --build-arg VERSION=v1.0.1 \
   --build-arg GIT_SHA=$(git rev-parse HEAD) \
   --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  -t myusername/backend:v1.0.1 \
+  -t <myusername>/backend:v1.0.1 \
   ./backend
 
 # ── Registry Tag Listing ───────────────────────────────────────────────────
 
 # List all tags in a private registry
-curl http://localhost:5005/v2/backend/tags/list | python -m json.tool
+curl http://localhost:5005/v2/backend/tags/list | python3 -m json.tool
 
 # ── Deployment Workflow ────────────────────────────────────────────────────
 
@@ -514,9 +522,6 @@ curl http://localhost:5005/v2/backend/tags/list | python -m json.tool
 docker compose pull
 docker compose up -d
 
-# Verify the running image digest
-docker inspect $(docker compose ps -q backend) \
-  --format='{{index .RepoDigests 0}}'
 
 # Rollback by reverting the tag in docker-compose.yml then:
 docker compose pull && docker compose up -d
@@ -530,7 +535,7 @@ Tagging discipline is one of those things that feels like overhead until the fir
 
 Most teams start with `latest` and `v1` style tags and graduate to proper semantic versioning after their first tagging-related incident. The moment described at the opening of this step — where `v1` was silently overwritten — is the exact incident that converts teams. Building the tagging system correctly from the beginning is cheaper than retrofitting it under pressure.
 
-In GitHub Actions, the git SHA and tag information is available as environment variables (`$GITHUB_SHA`, `$GITHUB_REF_NAME`) that can be passed directly to the build command. A properly configured workflow for building and pushing Docker images tags with the commit SHA on every push to main, and additionally tags with the semantic version when a git tag is pushed. The workflow replaces `build.sh` — but the tagging logic is identical. The script in this step is a stepping stone to understanding what the CI pipeline is doing.
+In GitHub Actions, the git SHA and tag information is available as environment variables (`$GITHUB_SHA`, `$GITHUB_REF_NAME`) that can be passed directly to the build command. A properly configured workflow for building and pushing Docker images tags with the commit SHA on every push to main, and additionally tags with the semantic version when a git tag is pushed. The workflow replaces `build.sh` but the tagging logic is identical. The script in this step is a stepping stone to understanding what the CI pipeline is doing.
 
 The OCI image labels (`org.opencontainers.image.*`) have become the standard for image metadata. Tools like `docker scout`, `trivy`, and most registry UIs know how to read these labels and display them. An image with proper OCI labels shows its version, creation time, and source repository in the registry UI without any additional configuration. The ten lines of `LABEL` instructions in the Dockerfile pay dividends every time someone looks at the image in the registry six months after it was built.
 
@@ -558,6 +563,8 @@ docker push myusername/backend:v1.0.0
 ```
 
 Note the new digest. The tag `v1.0.0` now points to the new image. The previous image still exists in the registry by its old digest but the tag no longer reaches it. This is the exact problem a proper tagging scheme prevents.
+
+`Do not overwrite semantic release tags in real production systems. This exercise intentionally demonstrates why mutable tags are dangerous.`
 
 **Exercise 2 — Build the semantic version tag hierarchy**
 
@@ -627,7 +634,7 @@ Inspect the labels on the built image:
 
 ```bash
 docker inspect myusername/backend:v1.0.2 \
-  --format='{{json .Config.Labels}}' | python -m json.tool
+  --format='{{json .Config.Labels}}' | python3 -m json.tool
 ```
 
 Confirm the version, revision, and creation time are present. Now start a container from this image and inspect the labels on the running container — they should be identical. The metadata travels with the image from build through deployment.
@@ -675,10 +682,10 @@ Apply it and verify which image is running:
 docker compose pull
 docker compose up -d
 docker inspect $(docker compose ps -q backend) \
-  --format='{{index .RepoDigests 0}}'
+  --format='{{.Config.Image}}'
 ```
 
-Note the digest. Now simulate a bad deployment — switch to `v1.0.3` in `docker-compose.yml`, apply it, and confirm the digest changes. Then roll back:
+Note the image. Now simulate a bad deployment — switch to `v1.0.3` in `docker-compose.yml`, apply it, and confirm the changes. Then roll back:
 
 ```yaml
 backend:
@@ -689,10 +696,10 @@ backend:
 docker compose pull
 docker compose up -d
 docker inspect $(docker compose ps -q backend) \
-  --format='{{index .RepoDigests 0}}'
+  --format='{{.Config.Image}}'
 ```
 
-Confirm the digest matches `v1.0.2` again. The entire rollback was a tag change in a text file followed by two commands. No rebuilding, no source code needed — just the registry tags waiting.
+Confirm the running container is using v1.0.2 again. The entire rollback was a tag change in a text file followed by two commands. No rebuilding, no source code needed — just the registry tags waiting.
 
 **Exercise 7 — Read the full tag list and categorise it**
 
@@ -700,7 +707,7 @@ After completing the previous exercises, list all tags currently in your registr
 
 ```bash
 # For private registry:
-curl http://localhost:5005/v2/backend/tags/list | python -m json.tool
+curl http://localhost:5005/v2/backend/tags/list | python3 -m json.tool
 
 # For Docker Hub: check the Tags tab in the browser
 ```
