@@ -4,7 +4,7 @@
 
 ## 0. Goal of This Step
 
-Understand how a CI/CD pipeline takes the manual steps built across the previous steps — build, test, tag, push, deploy — and runs them automatically on every code change, so that the path from a commit to a running deployment is consistent, auditable, and requires no human intervention.
+Understand how a CI/CD pipeline takes the manual steps built across the previous steps — build, test, tag, push, deploy and runs them automatically on every code change, so that the path from a commit to a running deployment is consistent, auditable, and requires no human intervention.
 
 
 
@@ -14,7 +14,7 @@ Across steps 14 through 24, the workflow for getting a code change into producti
 
 This works when there is one developer and one server. It breaks in several ways as the project grows. A second developer does not know which steps to run or in which order. A deployment at 11pm means someone has to be at their laptop. A mistake in the build step — wrong tag, skipped vulnerability scan, untested image — goes straight to production with nothing catching it. And there is no record of what was deployed, when, or by whom, beyond whatever the developer remembers to write in a commit message.
 
-CI/CD — Continuous Integration and Continuous Deployment — is the practice of automating this entire path. The pipeline is the written-down version of every manual step. It runs the same way on every push, by every developer, at any hour, and it produces a log of exactly what happened. The question "what exactly ran when we deployed v1.0.4 last Thursday?" has a precise answer: the pipeline log.
+CI/CD — Continuous Integration and Continuous Deployment is the practice of automating this entire path. The pipeline is the written-down version of every manual step. It runs the same way on every push, by every developer, at any hour, and it produces a log of exactly what happened. The question "what exactly ran when we deployed v1.0.4 last Thursday?" has a precise answer: the pipeline log.
 
 For Docker specifically, CI/CD solves one more problem that the previous steps left open: the `build.sh` script runs on a developer's laptop, with that developer's local Docker cache, that developer's version of the source code, and that developer's credentials. Two developers running `build.sh` on the same commit can produce different images if their local environments differ in any way. A CI pipeline runs in a clean, controlled environment on every push — the build is reproducible because the environment is reproducible.
 
