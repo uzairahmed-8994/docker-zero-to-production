@@ -54,8 +54,9 @@ def init_db():
             time.sleep(2)
     raise Exception("Could not connect to database after multiple retries")
 
-# Called at import time — runs whether started by 'python app.py' or gunicorn
-init_db()
+# Skip DB init during lightweight CI container tests
+if os.getenv("SKIP_DB_INIT") != "true":
+    init_db()
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
