@@ -58,9 +58,16 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '25-ci-cd-with-docker/**'
+      - '.github/workflows/docker-build-push.yml'
+
   pull_request:
     branches:
       - main
+    paths:
+      - '25-ci-cd-with-docker/**'
+      - '.github/workflows/docker-build-push.yml'
 
 jobs:
   build:
@@ -70,6 +77,8 @@ jobs:
 `on.push.branches: [main]` — run this pipeline whenever code is pushed to the main branch.
 `on.pull_request.branches: [main]` — also run it on pull requests targeting main, but without the push step (the image is built and tested but not pushed to the registry until the PR is merged).
 `runs-on: ubuntu-latest` — run the job on a fresh Ubuntu virtual machine provided by GitHub.
+
+The `paths:` filter limits when the pipeline runs. This repository is structured as a monorepo-style learning project, where each numbered step contains its own isolated application. Without path filtering, editing unrelated lessons or documentation would still trigger the Docker build pipeline. The filter ensures the workflow only runs when files inside `25-ci-cd-with-docker/` or the workflow file itself are modified.
 
 **Step 3 — Adding the build steps**
 
@@ -85,7 +94,7 @@ I added the first set of steps — checking out the code, setting up Docker, and
 
       - name: Build backend image
         run: |
-          docker build -t backend:test ./backend
+          docker build -t backend:test ./25-ci-cd-with-docker/backend
 ```
 
 `actions/checkout@v4` checks out the repository onto the runner. Without this, the runner has no source code.
@@ -181,7 +190,7 @@ Then added the login and push steps to the workflow:
         if: github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: ./25-ci-cd-with-docker/backend
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -238,46 +247,74 @@ Total: 57 seconds from push to image in the registry. The image appeared on Dock
 I then made a small change to app.py and pushed again. The second run completed significantly faster because Docker layer caching reused the unchanged base image and dependency layers. Only the changed application layer needed rebuilding and pushing.
 
 ```
-✓ Checkout code           (2s)
-✓ Set up Docker Buildx    (3s)
-✓ Build backend image     (8s)   ← cache hit on base and dependency layers
-✓ Test backend image      (6s)
-✓ Log in to Docker Hub    (1s)
+✓ Checkout code           (0s)
+✓ Set up Docker Buildx    (7s)
+✓ Build backend image     (6s)   ← cache hit on base and dependency layers
+✓ Test backend image      (5s)
+✓ Log in to Docker Hub    (0s)
 ✓ Extract metadata        (1s)
-✓ Build and push backend  (6s)   ← only changed layers uploaded
+✓ Build and push backend  (8s)   ← only changed layers uploaded
 ```
 
-Total: 27 seconds. The build cache made the second run three times faster. Only the application code layer was rebuilt and pushed.
+Total: 31 seconds. The build cache made the second run approx two times faster. Only the application code layer was rebuilt and pushed.
 
 **Step 7 — Adding automated deployment**
 
-The pipeline built and pushed the image. The deployment step — updating the server — was still manual. I extended the workflow to SSH into the server and run the deployment after a successful push:
+The pipeline could now build, test, tag, and push the image automatically. The remaining manual step was the deployment itself — connecting to the server, pulling the new image, and restarting the containers.
 
-```yaml
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+A common CI/CD pattern is:
 
-    steps:
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd /opt/myapp
-            docker compose pull
-            docker compose up -d
-            docker compose ps
+```text
+git push → CI pipeline → image build → image push → server pulls new image → containers restart
 ```
 
-I added three more secrets to the repository: `SERVER_HOST` (the server's IP address), `SERVER_USER` (the SSH username), and `SERVER_SSH_KEY` (the private SSH key for that user on that server).
+GitHub Actions can execute commands on a remote Linux server over SSH after the build succeeds. I prepared a deployment job for that workflow:
 
-The `needs: build` directive made the deploy job wait for the build job to complete successfully before running. A failed build meant no deployment. A failed test meant no deployment. Only a fully successful build-test-push sequence triggered the deployment.
+```yaml
+deploy:
+  needs: build
+  runs-on: ubuntu-latest
+  if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-After the deploy job ran, the server was running the new image. The entire path — from `git push` on my laptop to the new image serving traffic on the server — was automated and took under two minutes.
+  steps:
+    - name: Deploy to server
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        script: |
+          cd /opt/myapp
+          docker compose pull
+          docker compose up -d
+          docker compose ps
+```
+
+This deployment job does not run on the GitHub runner itself. It SSHs into another machine — typically a cloud VM such as an AWS EC2 instance, a DigitalOcean droplet, a VPS, or a dedicated Linux server.
+
+The values come from GitHub repository secrets:
+
+`SERVER_HOST` → the server's public IP address or DNS name
+`SERVER_USER` → the Linux SSH user on that server
+`SERVER_SSH_KEY` → the private SSH key used for authentication
+
+The deployment commands execute on that remote server:
+
+```bash
+cd /opt/myapp
+docker compose pull
+docker compose up -d
+```
+
+docker compose pull downloads the newly pushed image from Docker Hub.
+
+docker compose up -d recreates the containers using the updated image tag from docker-compose.yml.
+
+The needs: build directive makes deployment dependent on a successful build job. If the image fails to build, fails the health check, or fails to push to the registry, the deployment job never runs.
+
+I did not execute this deployment job yet because it requires a real server configured with Docker, Docker Compose, SSH access, and the application stack already present. But this is the standard pattern used by many small and medium production deployments before moving to more advanced orchestrators like Kubernetes or ECS.
+
+
 
 **Step 8 — Understanding what changed about the workflow**
 
@@ -285,11 +322,11 @@ I compared the before and after:
 
 Before: edit code → build locally → test manually → tag → push → SSH to server → pull → restart → verify.
 
-After: edit code → push to git. Everything else happened automatically, in a documented, reproducible environment, with a log of every step.
+After: edit code → push to git. Everything else in the build-test-publish pipeline happened automatically, in a documented, reproducible environment, with a log of every step.
 
-The pipeline also introduced a gate that did not exist before: the test step. Locally, I had sometimes skipped the health check verification when in a hurry. The pipeline never skipped it. Every push was tested the same way.
+The pipeline also introduced an enforcement layer that did not exist before: the test step. Locally, I had sometimes skipped the health check verification when in a hurry. The pipeline never skipped it. Every push was tested the same way.
 
-
+This same pattern scales upward into modern platforms like Kubernetes, ECS, GitOps systems, and progressive deployment pipelines — the tooling changes, but the core CI/CD principles remain the same.
 
 ## 3. Why It Happens
 
@@ -305,20 +342,27 @@ Secrets in CI pipelines are the production-safe version of the `.env` file from 
 
 ## 4. Solution
 
-The complete workflow file for building, testing, and deploying the backend image:
+The complete workflow file for building, testing, and publishing the backend image:
 
 **`.github/workflows/docker-build-push.yml`:**
 
 ```yaml
-name: Build, Test, and Deploy
+name: Build, Test, and Push
 
 on:
   push:
     branches:
       - main
+    paths:
+      - '25-ci-cd-with-docker/**'
+      - '.github/workflows/docker-build-push.yml'
+
   pull_request:
     branches:
       - main
+    paths:
+      - '25-ci-cd-with-docker/**'
+      - '.github/workflows/docker-build-push.yml'
 
 jobs:
   build:
@@ -334,7 +378,7 @@ jobs:
       - name: Build backend image for testing
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: ./25-ci-cd-with-docker/backend
           load: true
           tags: backend:test
           cache-from: type=gha
@@ -342,18 +386,21 @@ jobs:
 
       - name: Test backend image
         run: |
-          docker run -d --name backend-test -p 5000:5000 \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=testdb \
-            -e DB_USER=testuser \
-            -e DB_PASSWORD=testpass \
+          docker run -d \
+            --name backend-test \
+            -e SKIP_DB_INIT=true \
+            -p 5000:5000 \
             backend:test
+
+          # Wait for container startup
           sleep 5
-          docker run --rm --network host curlimages/curl:latest \
-            curl -f http://localhost:5000/health || \
+
+          # Verify health endpoint
+          curl -f http://localhost:5000/health || \
             (docker logs backend-test && exit 1)
-          docker stop backend-test && docker rm backend-test
+
+          docker stop backend-test
+          docker rm backend-test
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push'
@@ -376,30 +423,12 @@ jobs:
         if: github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: ./25-ci-cd-with-docker/backend
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd /opt/myapp
-            docker compose pull
-            docker compose up -d
-            docker compose ps
 ```
 
 **Required GitHub repository secrets:**
@@ -407,21 +436,22 @@ jobs:
 ```
 DOCKERHUB_USERNAME   — your Docker Hub username
 DOCKERHUB_TOKEN      — Docker Hub access token (not account password)
-SERVER_HOST          — deployment server IP or hostname
-SERVER_USER          — SSH username on the server
-SERVER_SSH_KEY       — private SSH key for the server user
+# Deployment-related secrets would be needed later if automated server deployment is added:
+# SERVER_HOST
+# SERVER_USER
+# SERVER_SSH_KEY
 ```
 
-**`docker-compose.yml` on the server — reference `latest` for auto-deployment:**
+**`docker-compose.yml` on the server — reference an immutable version tag:**
 
 ```yaml
 backend:
-  image: myusername/backend:latest   # pipeline updates latest on every main push
+  image: myusername/backend:v1.0.1   # pipeline updates latest on every main push
   restart: on-failure
   # ... rest of config
 ```
 
-
+A deployment pipeline can either update the compose file to point at a new immutable version tag, or deploy mutable tags like latest. Immutable version tags are safer because they guarantee exactly which image version is running in production.
 
 ## 5. Deep Understanding
 
@@ -474,7 +504,7 @@ on:
 
 When a git tag like `v1.0.2` is pushed, this triggers a separate workflow that builds the image, tags it with the semver version (`v1.0.2`, `v1.0`, `v1`, `latest`), and deploys it. Day-to-day commits to main go through the automated pipeline without production deployment. Production deployments are triggered by intentionally pushing a version tag.
 
-This two-pipeline pattern — continuous integration on every commit, continuous deployment on version tags — is the most common approach for teams that want automation without deploying every single commit to production.
+This two-pipeline pattern — continuous integration on every commit, continuous deployment on version tags, is the most common approach for teams that want automation without deploying every single commit to production.
 
 ### What the Deploy Step Actually Does
 
@@ -544,10 +574,11 @@ docker manifest inspect myusername/backend:latest | grep digest | head -1
 # ── Debugging a Failed Pipeline ────────────────────────────────────────────
 
 # Reproduce the failing step locally:
-docker build -t backend:test ./backend
-docker run -d --name backend-test -p 5000:5000 \
-  -e DB_HOST=localhost -e DB_PORT=5432 \
-  -e DB_NAME=testdb -e DB_USER=testuser -e DB_PASSWORD=testpass \
+docker build -t backend:test ./25-ci-cd-with-docker/backend
+docker run -d \
+  --name backend-test \
+  -e SKIP_DB_INIT=true \
+  -p 5000:5000 \
   backend:test
 docker logs backend-test
 curl -f http://localhost:5000/health
@@ -593,7 +624,7 @@ Open the Actions tab in your GitHub repository and watch the pipeline run. For e
 After the first pipeline run completes, make a trivial change to `app.py` — add a comment — and push:
 
 ```bash
-git add backend/app.py
+git add 25-ci-cd-with-docker/backend/app.py
 git commit -m "Add comment to test cache"
 git push origin main
 ```
@@ -606,8 +637,8 @@ Create a new branch, make a change, and open a pull request:
 
 ```bash
 git checkout -b test-pr-gate
-echo "# test" >> backend/app.py
-git add backend/app.py
+echo "# test" >> 25-ci-cd-with-docker/backend/app.py
+git add 25-ci-cd-with-docker/backend/app.py
 git commit -m "Test PR pipeline gate"
 git push origin test-pr-gate
 ```
@@ -633,7 +664,7 @@ Commit and push. Watch the pipeline fail at the test step:
 
 The pipeline stops. The push step does not run. The server is not updated. The broken image never reached the registry. Revert the health route and push again — the pipeline passes and the deployment proceeds. This exercise demonstrates the test step as a gate: breaking production by pushing broken code requires either bypassing the pipeline or having no tests at all.
 
-**Exercise 6 — Add the deploy job and watch the full automated deployment**
+**Exercise 6 — Add the deploy job and watch the full automated deployment (Optional)**
 
 Add the `deploy` job to the workflow file and configure the three server secrets (`SERVER_HOST`, `SERVER_USER`, `SERVER_SSH_KEY`). Push the updated workflow:
 
