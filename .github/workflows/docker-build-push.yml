@@ -1,18 +1,24 @@
-name: Build and Push Docker Image
+name: Build, Test, and Push
 
 on:
   push:
     branches:
       - main
+    paths:
+      - '25-ci-cd-with-docker/**'
+      - '.github/workflows/docker-build-push.yml'
 
   pull_request:
     branches:
       - main
-
+    paths:
+      - '25-ci-cd-with-docker/**'
+      - '.github/workflows/docker-build-push.yml'
+      
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -20,9 +26,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build backend image
-        run: |
-          docker build -t backend:test ./25-ci-cd-with-docker/backend
+      - name: Build backend image for testing
+        uses: docker/build-push-action@v5
+        with:
+          context: ./25-ci-cd-with-docker/backend
+          load: true
+          tags: backend:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Test backend image
         run: |
@@ -32,10 +43,10 @@ jobs:
             -p 5000:5000 \
             backend:test
 
-           # Wait for the container to start
+          # Wait for container startup
           sleep 5
 
-          # Check the health endpoint
+          # Verify health endpoint
           curl -f http://localhost:5000/health || \
             (docker logs backend-test && exit 1)
 
@@ -49,7 +60,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata for tags
+      - name: Extract metadata for Docker tags
         if: github.event_name == 'push'
         id: meta
         uses: docker/metadata-action@v5
