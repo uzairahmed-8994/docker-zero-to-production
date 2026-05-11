@@ -98,34 +98,56 @@ The build step runs `docker build` exactly as it was run locally — the same Do
 
 A pipeline that builds and immediately pushes without testing is only slightly better than no pipeline at all — it automates the mistake along with the correct deployment. I added a test step that verified the image actually worked:
 
+
 ```yaml
-      - name: Test backend image
-        run: |
-          docker run -d \
-            --name backend-test \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=testdb \
-            -e DB_USER=testuser \
-            -e DB_PASSWORD=testpass \
-            -p 5000:5000 \
-            backend:test
+- name: Test backend image
+  run: |
+    docker run -d \
+      --name backend-test \
+      -e SKIP_DB_INIT=true \
+      -p 5000:5000 \
+      backend:test
 
-          # Wait for the container to start
-          sleep 5
+    # Wait for the container to start
+    sleep 5
 
-          # Check the health endpoint
-          docker run --rm --network host curlimages/curl:latest \
-            curl -f http://localhost:5000/health || \
-            (docker logs backend-test && exit 1)
+    # Check the health endpoint
+    curl -f http://localhost:5000/health || \
+      (docker logs backend-test && exit 1)
 
-          docker stop backend-test
-          docker rm backend-test
+    docker stop backend-test
+    docker rm backend-test
 ```
 
-This test did not connect to a real database — the backend would fail to initialise and the health endpoint would not respond if the database connection was the only thing checked. But it confirmed that the image built correctly, Gunicorn started, and the health endpoint was reachable. A failed health check would print the container logs and fail the pipeline step, stopping the workflow before the push.
+Initially, I tried running the backend container with fake database environment variables:
 
-For a more complete test, a `docker-compose.test.yml` file can bring up the full stack — backend, frontend, and a test database — run integration tests against it, and tear it down. That is the next step after the basic health check works.
+```bash
+-e DB_HOST=localhost
+-e DB_PORT=5432
+```
+
+But the pipeline failed. The backend application automatically runs init_db() during startup, and there was no PostgreSQL server running inside the GitHub Actions runner. The container itself was healthy — the failure was caused by a missing external dependency.
+
+To solve this, I added a lightweight CI bypass inside the application:
+
+```python
+if os.getenv("SKIP_DB_INIT") != "true":
+    init_db()
+```
+
+The pipeline now starts the container with SKIP_DB_INIT=true, which skips the database initialisation during the smoke test.
+
+This allowed the pipeline to verify that:
+
+the image builds correctly
+the container starts correctly
+Gunicorn launches successfully
+the Flask health endpoint responds
+
+without requiring a full database stack during the CI test.
+
+A more complete pipeline could start the entire stack — backend, frontend, and PostgreSQL — using a dedicated docker-compose.test.yml and run full integration tests against it. For this step, the smoke test was sufficient.
+
 
 **Step 5 — Adding the registry login and push**
 
@@ -183,21 +205,37 @@ git commit -m "Add CI/CD pipeline for Docker build and push"
 git push origin main
 ```
 
+The first pipeline run failed immediately.
+
+The workflow was trying to build from:
+
+```bash
+docker build -t backend:test ./backend
+```
+
+But this repository is structured as a step-by-step monorepo, where each lesson has its own isolated application directory. The actual backend path was:
+
+```
+./25-ci-cd-with-docker/backend
+```
+
+GitHub Actions runs from the root of the repository, so all workflow paths must be relative to the repository root, not the lesson directory.
+
 In the GitHub repository, I opened the Actions tab. The workflow appeared immediately — GitHub had detected the push and started the pipeline. I watched the steps execute in real time:
 
 ```
-✓ Checkout code           (2s)
-✓ Set up Docker Buildx    (3s)
-✓ Build backend image     (47s)
-✓ Test backend image      (8s)
-✓ Log in to Docker Hub    (1s)
-✓ Extract metadata        (1s)
-✓ Build and push backend  (23s)
+✓ Checkout code (1s)
+✓ Set up Docker Buildx (10s)
+✓ Build backend image (7s)
+✓ Test backend image (5s)
+✓ Log in to Docker Hub (1s)
+✓ Extract metadata (1s)
+✓ Build and push backend image (24s)
 ```
 
-Total: 85 seconds from push to image in the registry. The image appeared on Docker Hub tagged with the commit SHA and as `latest`.
+Total: 57 seconds from push to image in the registry. The image appeared on Docker Hub tagged with the commit SHA and as `latest`.
 
-I made a small change to `app.py` and pushed again. This time:
+I then made a small change to app.py and pushed again. The second run completed significantly faster because Docker layer caching reused the unchanged base image and dependency layers. Only the changed application layer needed rebuilding and pushing.
 
 ```
 ✓ Checkout code           (2s)
