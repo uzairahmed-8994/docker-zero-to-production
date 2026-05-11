@@ -22,17 +22,13 @@ jobs:
 
       - name: Build backend image
         run: |
-          docker build -t backend:test ./backend
+          docker build -t backend:test ./25-ci-cd-with-docker/backend
 
       - name: Test backend image
         run: |
           docker run -d \
             --name backend-test \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_USER=testuser \
-            -e DB_PASSWORD=testpass \
-            -e DB_NAME=testdb \
+            -e SKIP_DB_INIT=true \
             -p 5000:5000 \
             backend:test
 
@@ -40,8 +36,7 @@ jobs:
           sleep 5
 
           # Check the health endpoint
-          docker run --rm --network host curlimages/curl:latest \
-            curl -f http://localhost:5000/health || \
+          curl -f http://localhost:5000/health || \
             (docker logs backend-test && exit 1)
 
           docker stop backend-test
@@ -68,7 +63,7 @@ jobs:
         if: github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: ./25-ci-cd-with-docker/backend
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
