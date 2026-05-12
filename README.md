@@ -12,9 +12,9 @@ The focus is not just running Docker commands, but understanding:
 - why deployments fail
 - how production systems are debugged
 
----
 
-## Architecture
+
+## ⬢ Architecture
 
 A three-service application running with Docker and Docker Compose:
 
@@ -50,9 +50,9 @@ The stack evolves gradually across 28 steps:
 - CI/CD
 - Real-world troubleshooting
 
----
 
-##  What This Repository Covers
+
+## ⬢ What This Repository Covers
 
 | Area | Topics |
 |---|---|
@@ -64,9 +64,9 @@ The stack evolves gradually across 28 steps:
 | CI/CD | Registries, version tagging, GitHub Actions |
 | Troubleshooting | Incident response, debugging, interview preparation |
 
----
 
-## Repository Structure
+
+## ⬢ Repository Structure
 
 | Steps | Focus Area |
 |---|---|
@@ -76,18 +76,18 @@ The stack evolves gradually across 28 steps:
 | 23–25 | Deployment and CI/CD |
 | 26–28 | Troubleshooting and production scenarios |
 
----
 
-## Who This Repository Is For
+
+## ⬢ Who This Repository Is For
 
 - Beginners starting with Docker
 - Backend engineers
 - Cloud / DevOps engineers
 - Anyone who wants to understand Docker beyond basic tutorials
 
----
 
-## Why I Built This Repository
+
+## ⬢ Why I Built This Repository
 
 This repository started as my own effort to learn Docker properly as a cloud engineer. Not just how to use it, but how it behaves in real environments.
 
