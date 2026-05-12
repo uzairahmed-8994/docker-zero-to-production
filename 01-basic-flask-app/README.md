@@ -98,17 +98,14 @@ Think of `venv` like:
 * Local development
 * Before Docker containerization
 
-Note: In Docker, this is not required because containers already isolate environments.
+Note: In Docker, virtual environments are usually unnecessary because the container itself already isolates dependencies.
 
 
 
 ## 3. Documentation Links
 
-* Flask Documentation
-  https://flask.palletsprojects.com/
-
-* Python Virtual Environment
-  https://docs.python.org/3/library/venv.html
+- [Flask Documentation](https://flask.palletsprojects.com/?utm_source=chatgpt.com)
+- [Python venv Documentation](https://docs.python.org/3/library/venv.html?utm_source=chatgpt.com)
 
 
 
@@ -181,7 +178,7 @@ Files created:
 01-basic-flask-app/
 ├── app.py
 ├── requirements.txt
-└── venv/
+└── README.md
 ```
 
 Run commands:
