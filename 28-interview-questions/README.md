@@ -154,20 +154,20 @@ I treat container-to-container connectivity as three separate problems that look
 I start with DNS:
 
 ```bash
-docker exec backend python -c "import socket; print(socket.gethostbyname('db'))"
+docker exec backend python3 -c "import socket; print(socket.gethostbyname('db'))"
 ```
 
 If this fails, the two containers are not on the same Docker network. In Docker Compose, services on different named networks cannot resolve each other by service name. I check:
 
 ```bash
-docker inspect backend --format='{{json .NetworkSettings.Networks}}' | python -m json.tool
-docker inspect db --format='{{json .NetworkSettings.Networks}}' | python -m json.tool
+docker inspect backend --format='{{json .NetworkSettings.Networks}}' | python3 -m json.tool
+docker inspect db --format='{{json .NetworkSettings.Networks}}' | python3 -m json.tool
 ```
 
 If DNS resolves but the connection fails:
 
 ```bash
-docker exec backend python -c "
+docker exec backend python3 -c "
 import socket
 s = socket.socket()
 s.settimeout(3)
@@ -588,7 +588,7 @@ If this fails: networking or the backend itself. If it succeeds: the issue is at
 Third: can the backend reach the database?
 
 ```bash
-docker exec backend python -c "import psycopg2, os; conn = psycopg2.connect(...); print('ok')"
+docker exec backend python3 -c "import psycopg2, os; conn = psycopg2.connect(...); print('ok')"
 ```
 
 If this fails: database layer. If it succeeds: the issue is in the application logic, not the infrastructure.
