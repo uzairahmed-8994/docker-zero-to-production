@@ -128,9 +128,10 @@ Now:
 
 ### EXPOSE vs Port Mapping
 
-Instruction         	Meaning
-EXPOSE 5000	            Documentation only
--p 5000:5000	        Actually opens access
+| Instruction | Meaning |
+|---|---|
+| `EXPOSE 5000` | Documentation only |
+| `-p 5000:5000` | Publishes host access to the container |
 
 ## 6. Commands
 
