@@ -4,7 +4,7 @@
 
 ## 0. What This Step Is
 
-Step 26 was eight case studies — how investigations moved from symptom to root cause in unhurried retrospect. This step is different. It is a reference you open when production is broken right now and you need to know what to do in the next two minutes.
+Step 26 was nine case studies — how investigations moved from symptom to root cause in unhurried retrospect. This step is different. It is a reference you open when production is broken right now and you need to know what to do in the next two minutes.
 
 The structure follows the real incident-response sequence: triage first, stabilise second, investigate third. Root cause comes after the service is back up — not before. This order matters more than any individual command.
 
@@ -126,7 +126,7 @@ Look for: empty values where values are expected, wrong values, missing variable
 
 ```bash
 docker inspect $(docker compose ps -q backend) \
-  --format='{{json .State.Health}}' | python -m json.tool
+  --format='{{json .State.Health}}' | python3 -m json.tool
 ```
 
 The `Log` array contains the last five health check results with exact output and exit codes. If the health check is failing, this shows exactly what the check command returned.
@@ -138,7 +138,7 @@ docker inspect $(docker compose ps -q backend) \
   --format='RestartCount={{.RestartCount}} ExitCode={{.State.ExitCode}}'
 ```
 
-A restart count climbing means the problem is recurring. Exit code 0 means a clean exit (deliberate shutdown or clean crash). Non-zero means an error exit or a kill signal.
+A restart count climbing means the problem is recurring. Exit code 0 means a clean intentional exit (graceful shutdown or completed process). Non-zero means an error exit or a kill signal.
 
 **Step 6 — Check resource usage history**
 
