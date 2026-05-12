@@ -846,7 +846,7 @@ Memory = 0 means no limit. On a shared server, a container with no memory limit 
 
 ```bash
 docker inspect $(docker compose ps -q backend) \
-  --format='{{json .State.Health.Log}}' | python -m json.tool
+  --format='{{json .State.Health.Log}}' | python3 -m json.tool
 ```
 
 `healthy` tells you the last check passed. The log tells you whether the last five checks all passed or whether it flipped between healthy and unhealthy repeatedly.
