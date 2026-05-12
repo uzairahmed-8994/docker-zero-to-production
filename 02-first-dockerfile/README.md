@@ -79,7 +79,7 @@ FROM python:3.11-slim
 
 - Defines the base environment
 - Pulled from Docker Hub: https://hub.docker.com/
-- Maintained by Docker + official language maintainers
+- Maintained through Docker Official Images and upstream language maintainers/community.
 
 
 ### Working Directory
@@ -106,9 +106,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 What happens internally:
 
-- Docker creates a temporary container
-- Executes the command
-- Saves result as a new image layer
+- Docker executes the instruction in an isolated build environment and stores the filesystem changes as a new image layer.
 
 ### Copy Application Code
 ```dockerfile
